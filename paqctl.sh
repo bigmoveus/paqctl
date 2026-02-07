@@ -1802,7 +1802,7 @@ ROLE="${ROLE}"
 # Source config for ports
 [ -f "\${INSTALL_DIR}/settings.conf" ] && . "\${INSTALL_DIR}/settings.conf"
 
-# Apply firewall rules (server only)
+# Apply firewall rules (server + client)
 if [ "\$ROLE" = "server" ]; then
     # Apply paqet firewall rules (NOTRACK for KCP)
     modprobe iptable_raw 2>/dev/null || true
@@ -1833,6 +1833,26 @@ if [ "\$ROLE" = "server" ]; then
             ip6tables -A INPUT -p tcp --dport "\$vio_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
         ip6tables -C OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
             ip6tables -A OUTPUT -p tcp --sport "\$vio_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
+    fi
+else
+    # GFK client firewall rules (NOTRACK + DROP on VIO client port)
+    vio_client_port="\${GFK_VIO_CLIENT_PORT:-40000}"
+    TAG="paqctl"
+    modprobe iptable_raw 2>/dev/null || true
+    iptables -t raw -C PREROUTING -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
+        iptables -t raw -A PREROUTING -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
+    iptables -t raw -C OUTPUT -p tcp --sport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null || \\
+        iptables -t raw -A OUTPUT -p tcp --sport "\$vio_client_port" -m comment --comment "\$TAG" -j NOTRACK 2>/dev/null
+    iptables -C INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
+        iptables -A INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null
+    iptables -C OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
+        iptables -A OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null
+    # IPv6 rules for GFK client
+    if command -v ip6tables &>/dev/null; then
+        ip6tables -C INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
+            ip6tables -A INPUT -p tcp --dport "\$vio_client_port" -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
+        ip6tables -C OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || \\
+            ip6tables -A OUTPUT -p tcp --sport "\$vio_client_port" --tcp-flags RST RST -m comment --comment "\$TAG" -j DROP 2>/dev/null || true
     fi
 fi
 
@@ -3198,7 +3218,6 @@ restart_paqet() {
 #═══════════════════════════════════════════════════════════════════════
 
 _apply_firewall() {
-    [ "$ROLE" != "server" ] && return 0
     if ! command -v iptables &>/dev/null; then
         echo -e "${YELLOW}[!]${NC} iptables not found. Firewall rules cannot be applied." >&2
         return 1
@@ -3209,7 +3228,12 @@ _apply_firewall() {
 
     if [ "$BACKEND" = "gfw-knocker" ]; then
         # GFK: NOTRACK + DROP TCP on VIO port so OS doesn't respond, raw socket handles it
-        local vio_port="${GFK_VIO_PORT:-45000}"
+        local vio_port
+        if [ "$ROLE" = "server" ]; then
+            vio_port="${GFK_VIO_PORT:-45000}"
+        else
+            vio_port="${GFK_VIO_CLIENT_PORT:-40000}"
+        fi
         modprobe iptable_raw 2>/dev/null || true
         # NOTRACK: bypass conntrack for VIO packets (prevents hypervisor/bridge filtering)
         iptables -t raw -C PREROUTING -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || \
@@ -3233,6 +3257,7 @@ _apply_firewall() {
         return 0
     fi
 
+    [ "$ROLE" != "server" ] && return 0
     modprobe iptable_raw 2>/dev/null || true
     modprobe iptable_mangle 2>/dev/null || true
     local port="${LISTEN_PORT:-8443}"
@@ -3258,7 +3283,6 @@ _apply_firewall() {
 }
 
 _remove_firewall() {
-    [ "$ROLE" != "server" ] && return 0
     command -v iptables &>/dev/null || return 0
 
     local TAG="paqctl"
@@ -3266,7 +3290,12 @@ _remove_firewall() {
     # Always respect BACKEND variable - remove only that backend's firewall rules
     # This allows stop_paqet_backend and stop_gfk_backend to remove their own rules independently
     if [ "$BACKEND" = "gfw-knocker" ]; then
-        local vio_port="${GFK_VIO_PORT:-45000}"
+        local vio_port
+        if [ "$ROLE" = "server" ]; then
+            vio_port="${GFK_VIO_PORT:-45000}"
+        else
+            vio_port="${GFK_VIO_CLIENT_PORT:-40000}"
+        fi
         iptables -t raw -D PREROUTING -p tcp --dport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
         iptables -t raw -D OUTPUT -p tcp --sport "$vio_port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
         iptables -t raw -D PREROUTING -p tcp --dport "$vio_port" -j NOTRACK 2>/dev/null || true
@@ -3285,6 +3314,7 @@ _remove_firewall() {
         return 0
     fi
 
+    [ "$ROLE" != "server" ] && return 0
     local port="${LISTEN_PORT:-8443}"
     # Remove tagged rules
     iptables -t raw -D PREROUTING -p tcp --dport "$port" -m comment --comment "$TAG" -j NOTRACK 2>/dev/null || true
@@ -7007,7 +7037,29 @@ main() {
                 fi
             fi
         else
-            log_info "Client mode - no firewall rules needed"
+            if ! command -v iptables &>/dev/null; then
+                log_warn "iptables not found - firewall rules cannot be applied"
+            else
+                local _vio_client_port="${GFK_VIO_CLIENT_PORT:-40000}"
+                log_info "Applying NOTRACK + DROP rules for VIO client port $_vio_client_port..."
+                modprobe iptable_raw 2>/dev/null || true
+                iptables -t raw -C PREROUTING -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
+                    iptables -t raw -A PREROUTING -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                iptables -t raw -C OUTPUT -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || \
+                    iptables -t raw -A OUTPUT -p tcp --sport "$_vio_client_port" -m comment --comment "paqctl" -j NOTRACK 2>/dev/null || true
+                iptables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -A INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    log_warn "Failed to add VIO client INPUT DROP rule"
+                iptables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    iptables -A OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                    log_warn "Failed to add VIO client RST DROP rule"
+                if command -v ip6tables &>/dev/null; then
+                    ip6tables -C INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                        ip6tables -A INPUT -p tcp --dport "$_vio_client_port" -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                    ip6tables -C OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || \
+                        ip6tables -A OUTPUT -p tcp --sport "$_vio_client_port" --tcp-flags RST RST -m comment --comment "paqctl" -j DROP 2>/dev/null || true
+                fi
+            fi
         fi
     elif [ "$ROLE" = "server" ]; then
         apply_iptables_rules "$LISTEN_PORT"
