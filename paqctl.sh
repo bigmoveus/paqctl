@@ -32,7 +32,7 @@ fi
 VERSION="1.0.0"
 
 # Pinned versions for stability (update these after testing new releases)
-PAQET_VERSION_PINNED="v1.0.0-alpha.15"
+PAQET_VERSION_PINNED="v1.0.0-alpha.16"
 XRAY_VERSION_PINNED="v26.2.4"
 GFK_VERSION_PINNED="v1.0.0"
 
@@ -318,9 +318,13 @@ detect_arch() {
         x86_64|amd64) echo "amd64" ;;
         aarch64|arm64) echo "arm64" ;;
         armv7l|armv7|armhf) echo "arm32" ;;
+        mips64el|mips64le) echo "mips64le" ;;
+        mips64) echo "mips64" ;;
+        mipsel|mipsle) echo "mipsle" ;;
+        mips) echo "mips" ;;
         *)
             log_error "Unsupported architecture: $arch"
-            log_error "Paqet supports amd64, arm64, and arm32 only"
+            log_error "Paqet supports amd64, arm64, arm32, and MIPS variants"
             exit 1
             ;;
     esac
@@ -2225,7 +2229,7 @@ create_management_script() {
 VERSION="1.0.0"
 
 # Pinned versions for stability (update these after testing new releases)
-PAQET_VERSION_PINNED="v1.0.0-alpha.15"
+PAQET_VERSION_PINNED="v1.0.0-alpha.16"
 XRAY_VERSION_PINNED="v26.2.4"
 GFK_VERSION_PINNED="v1.0.0"
 
@@ -2545,6 +2549,10 @@ detect_arch() {
         x86_64|amd64) echo "amd64" ;;
         aarch64|arm64) echo "arm64" ;;
         armv7l|armv7|armhf) echo "arm32" ;;
+        mips64el|mips64le) echo "mips64le" ;;
+        mips64) echo "mips64" ;;
+        mipsel|mipsle) echo "mipsle" ;;
+        mips) echo "mips" ;;
         *)
             log_error "Unsupported architecture: $arch"
             return 1
